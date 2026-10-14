@@ -245,6 +245,19 @@ const ZH = {
   'Harness default': 'Harness 默认',
   Saving: '保存中',
   'Manage models': '管理模型',
+  'Finish the first-run setup first': '请先完成首次设置',
+
+  // First-run setup
+  'Working folder': '工作目录',
+  'Path to the folder the Bots work in': 'Bot 的工作目录路径',
+  'Browse…': '浏览…',
+  'Use this folder': '用这个目录',
+  'Choose another folder': '换一个目录',
+  'No directory chooser is available here': '当前环境没有可用的系统目录选择器',
+  'Could not open the system folder picker': '调起系统文件选择器失败',
+  'Getting the team ready…': '正在准备团队…',
+  "Hi, I'm {name}. Pick the team's working folder first. It cannot be changed once the team is made, so choose carefully.": '你好，我是 {name}。请先选团队的工作目录，选择后不可更改，请谨慎选择哦。',
+  'Thanks. Now pick the model I run on. You can change it later in my details.': '好，现在选我用的模型吧。以后可以在我的详情里改。',
 
   // Shapes
   Whale: '鲸鱼', Star: '星星', Moon: '月亮', Wave: '声波', Squircle: '圆角方', Bull: '牛角', Blossom: '花朵',
@@ -833,6 +846,9 @@ const HOST_ZH = {
   'Hand the admin role to another member instead of leaving the group without one': '请把管理员交给其他成员，不要让群聊没有管理员',
   'Hand the admin role to another member before leaving the group': '离开群聊前，请先把管理员交给其他成员',
   'The team needs at least one Main Bot': '团队至少要有一个主 Bot',
+  'Finish the first-run setup before making Bots': '请先完成首次设置，再创建 Bot',
+  'Finish the first-run setup before making group chats': '请先完成首次设置，再创建群聊',
+  'Finish the first-run setup before adding a DSH Agent': '请先完成首次设置，再添加 DSH Agent',
   'Only a Main Bot can be replaced': '只能替换主 Bot',
   'A Main Bot cannot be deleted; remove its Main Bot role first': '主 Bot 不能删除，请先取消它的主 Bot 身份',
   'Unknown theme': '未知主题',

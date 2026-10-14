@@ -31,6 +31,11 @@ export function install(rt) {
   const view = () => ({
     revision: state.revision,
     workspaceId: state.workspaceId ?? null,
+    // The folder the Bots work in, shown in the Bot details drawer.
+    workspace: rt.workspacePath(),
+    // The first-run flow the client walks before a team exists: pick the folder, then
+    // the model. Null once the first Main Bot exists (roster.js).
+    setup: rt.setupView(),
     // `mainBotId` is the first Main Bot, which the sidebar shows as its tile.
     mainBotId: state.mainBotIds[0] ?? null,
     mainBotIds: state.mainBotIds,
@@ -136,6 +141,12 @@ export function install(rt) {
           return ok(await rt.usageView({ timeZone: typeof body.timeZone === 'string' ? body.timeZone.slice(0, 64) : undefined }))
         case 'room-progress':
           return ok([...rt.roomProgress.entries()].filter(([, entry]) => entry.roomId === body.roomId).map(([callId, entry]) => ({ callId, replies: entry.replies, speaking: entry.speaking ?? null })))
+        case 'choose-workspace':
+          await rt.load()
+          return ok(await rt.chooseWorkspace(body.path))
+        case 'finish-setup':
+          await rt.load()
+          return ok(await rt.finishSetup({ model: body.model, effort: body.effort }))
         case 'create-bot': {
           await rt.bootstrap()
           const bot = await rt.createBot({ name: body.name, role: body.role, color: body.color, instructions: body.instructions, brief: body.brief, avatar: body.avatar, model: body.model, effort: body.effort })

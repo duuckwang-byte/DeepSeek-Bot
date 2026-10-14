@@ -119,6 +119,7 @@ body[data-bt-motion=quiet] .bt-mark[data-poke]{cursor:default}
 .bt-round{width:36px;height:36px;border-radius:50%;border:1px solid var(--bt-line);background:var(--bt-main);color:var(--bt-ink);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;padding:0;transition:background-color .12s ease,transform .12s ease}
 .bt-round:hover{background:var(--bt-hover)}
 .bt-round:active{transform:scale(.94)}
+.bt-round:disabled{opacity:.45;cursor:default}
 .bt-list{display:flex;flex-direction:column;gap:3px;overflow-y:auto;min-height:0;flex:1 1 auto}
 .bt-tile-wrap{display:flex;justify-content:center;padding:20px 0 15px}
 .bt-tile{display:flex;flex-direction:column;align-items:center;gap:4px;width:95px;padding:6px 8px 4px;border-radius:12px;border:0;background:transparent;color:var(--bt-ink);cursor:pointer;font-family:inherit;transition:background-color .12s ease}
@@ -414,6 +415,8 @@ button.bt-q-opt:active{background:var(--bt-active)}
 .bt-set-body{gap:20px}
 .bt-drawer-model{display:flex;flex-direction:column}
 .bt-drawer-model .bt-note{margin-top:6px}
+/* The folder the Bots work in: one path, readable in full even when it is long. */
+.bt-drawer-folder{margin-top:6px;font-size:12px;line-height:18px;color:var(--bt-ink-2);word-break:break-all;user-select:text}
 .bt-drawer-permission{display:flex;flex-direction:column}
 .bt-seg button.bt-perm-danger,.bt-seg button.bt-perm-danger[aria-pressed=true]{color:#e02135}
 

@@ -118,6 +118,8 @@ export function install(rt) {
 
   async function addAgent() {
     writeCheck()
+    // An Agent's first Session would bind the workspace before the flow picks one.
+    if (rt.setupView() !== null) throw new Error('Finish the first-run setup before adding a DSH Agent')
     if (Object.keys(state.agents).length > 0) throw new Error('The team already has a DSH Agent')
     const agent = { id: randomUUID(), name: AGENT_NAME, sessions: [], createdAt: Date.now() }
     state.agents[agent.id] = agent

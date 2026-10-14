@@ -89,6 +89,9 @@ export function HeaderPill({ sessionId, useRoster, useSessions, useSessionStatus
     return () => { delete document.body.dataset.btRoom }
   }, [Boolean(room)])
   const memoryNotice = notice && changed !== null && roster.memory !== false
+  // A blank hero Session has no Bot yet — the first-run flow has not made one — and the
+  // shell's title there is the workspace folder name, which is not ours to show.
+  if (roster.ready && !bot && !room) return null
   return h('div', { className: 'bt-head' },
     h('button', {
       type: 'button', className: 'bt-pill', 'aria-expanded': detailsOpen, 'data-memory': memoryNotice ? 'updated' : undefined,

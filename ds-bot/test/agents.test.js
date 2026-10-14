@@ -109,6 +109,16 @@ test('a team holds at most one DSH Agent', async (t) => {
   assert.equal(again.error.message, 'The team already has a DSH Agent')
 })
 
+test('add-agent waits for the first-run flow', async (t) => {
+  const { call, stop } = start()
+  t.after(stop)
+  assert.equal((await call('state', {})).value.setup.step, 'workspace')
+  const refused = await call('add-agent')
+  assert.equal(refused.ok, false)
+  assert.equal(refused.error.code, 'bot/refused')
+  assert.equal((await call('state', {})).value.setup.step, 'workspace')
+})
+
 test('agent-session appends Sessions; agent-archive removes one and archives it', async (t) => {
   const { call, stop, archived } = start(TEAM)
   t.after(stop)

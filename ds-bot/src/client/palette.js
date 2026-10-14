@@ -82,7 +82,7 @@ export function CommandPalette({ start, token, roster, actions, useSessions }) {
     { key: 'cmd:bot', icon: h(PlusIcon), title: t('Create Bot'), run: () => actions.openNewChat('create') },
     { key: 'cmd:group', icon: h(PeopleIcon), title: t('Create group chat'), run: () => actions.openNewChat('group') },
     { key: 'cmd:settings', icon: h(GearIcon), title: t('Bot settings'), run: () => actions.openSettings('general') },
-  ].filter(command => matchesName(command.title))
+  ].filter(command => matchesName(command.title) && !(roster.setup != null && command.key !== 'cmd:settings'))
   if (commands.length) sections.push([t('Commands'), commands])
   const rows = sections.flatMap(([, items]) => items)
   const active = Math.min(cursor, Math.max(rows.length - 1, 0))

@@ -1,7 +1,7 @@
 // Roster: creating, changing, and deleting Bots and group chats, the Main Bot role, and
 // the first Main Bot of a new team.
 import { mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { MAX_AVATAR_IMAGE, ROOM_MAX_MEMBERS, ROOM_MODES, ROOM_NAME_MAX, ROOM_NOTICE_MAX } from './constants.js'
 import { currentColor, isColor, unquote } from './text.js'
 import { nameProblem } from '../shared/mentions.js'
@@ -11,14 +11,67 @@ export function install(rt) {
 
   let bootstrapping = null
 
+  const defaultWorkspacePath = () => config.workspace ?? join(home, 'workspace')
+
   async function ensureWorkspace() {
     if (state.workspaceId && ctx.workspaceRegistry.get(state.workspaceId)) return state.workspaceId
-    const path = config.workspace ?? join(home, 'workspace')
+    // The folder picked in the first-run flow wins over the configured default.
+    const path = state.setup?.workspace ?? defaultWorkspacePath()
     await mkdir(path, { recursive: true })
     const workspace = await ctx.workspaceRegistry.resolveByPath(path) ?? await ctx.workspaceRegistry.create(path, 'DS Bot')
     state.workspaceId = workspace.id
     await rt.save()
     return workspace.id
+  }
+
+  // The folder the team's Bots work in, for the Bot details drawer.
+  const workspacePath = () => (state.workspaceId === undefined
+    ? null
+    : (ctx.workspaceRegistry.get(state.workspaceId)?.path ?? null))
+
+  const invalidSetup = message => Object.assign(new Error(message), { code: 'bot/invalid' })
+
+  // What the client runs the first-run flow on, or null once the team exists. The flow
+  // is: pick the folder, then pick the model (setup.js on the client).
+  function setupView() {
+    if (state.mainBotIds.some(id => rt.botOf(id))) return null
+    const workspace = typeof state.setup?.workspace === 'string' ? state.setup.workspace : null
+    return { step: workspace === null ? 'workspace' : 'model', workspace, defaultWorkspace: defaultWorkspacePath() }
+  }
+
+  // The picked folder is only remembered here: it becomes a real dsh Workspace when the
+  // flow finishes, so a half-finished setup never binds the team to a folder.
+  async function chooseWorkspace(path) {
+    const wanted = String(path ?? '').trim()
+    // An empty path steps back to the folder choice.
+    if (wanted === '') {
+      state.setup = {}
+      await rt.save()
+      return setupView()
+    }
+    if (!isAbsolute(wanted)) throw invalidSetup('The folder must be an absolute path')
+    state.setup = { ...(state.setup ?? {}), workspace: wanted }
+    await rt.save()
+    return setupView()
+  }
+
+  async function finishSetup({ model, effort } = {}) {
+    if (state.mainBotIds.some(id => rt.botOf(id))) return setupView()
+    if (typeof state.setup?.workspace !== 'string') throw invalidSetup('Choose a folder before the model')
+    const wanted = String(model ?? '').trim()
+    if (wanted === '') throw invalidSetup('Pick a model for the first Main Bot')
+    // Only the team's first Main Bot is stored as the DeepSeek whale; other Bots get a
+    // look from their id, and a Bot made Main Bot later keeps its own.
+    bootstrapping ??= createBot({
+      name: defaults.mainName, role: defaults.mainRole, main: true, color: 'deepseek',
+      avatar: { shape: 'whale' }, model: wanted, effort,
+    }).then(async (bot) => {
+      delete state.setup
+      await rt.save()
+      return bot
+    }).finally(() => { bootstrapping = null })
+    await bootstrapping
+    return setupView()
   }
 
   async function createSession(title) {
@@ -56,6 +109,9 @@ export function install(rt) {
   // `pickModel` leaves the model to the user: the chat opens on a model card, and the
   // greeting waits until a model is chosen. So does a Bot made when no model is served.
   async function createBot({ name: botName, role = '', instructions = '', color, brief = '', createdBy, main = false, avatar, model, effort, copyOf, pickModel = false }) {
+    // Nothing joins the team before its first Main Bot: an early Bot would bind the
+    // workspace to the default folder, stranding the folder the flow picks later.
+    if (main !== true && setupView() !== null) throw invalidSetup('Finish the first-run setup before making Bots')
     const cleanName = String(botName ?? '').trim().slice(0, 40)
     const problem = nameProblem(cleanName)
     if (problem !== undefined) throw new Error(problem)
@@ -250,6 +306,8 @@ export function install(rt) {
   }
 
   async function createRoom({ members: memberIds = [], name: roomName, notice, mode, admin, createdBy } = {}) {
+    // As with Bots: a group chat makes a Session, which would bind the workspace early.
+    if (setupView() !== null) throw invalidSetup('Finish the first-run setup before making group chats')
     const members = [...new Set(memberIds)].filter(id => rt.botOf(id))
     checkMembers(members)
     const custom = cleanRoomName(roomName ?? '')
@@ -444,20 +502,17 @@ export function install(rt) {
     }
   }
 
+  // A team exists only once its first Main Bot does; opening a window creates nothing.
+  // The client walks the first-run flow (setupView / chooseWorkspace / finishSetup).
   async function bootstrap() {
     await rt.load()
     void rt.syncModels()
-    if (state.mainBotIds.some(id => rt.botOf(id))) return
-    // Only the team's first Main Bot is stored as the DeepSeek whale; other Bots get a
-    // look from their id, and a Bot made Main Bot later keeps its own.
-    bootstrapping ??= createBot({ name: defaults.mainName, role: defaults.mainRole, main: true, color: 'deepseek', avatar: { shape: 'whale' }, pickModel: true })
-      .finally(() => { bootstrapping = null })
-    await bootstrapping
   }
 
   Object.assign(rt, {
     ensureWorkspace, createSession, createBot, duplicateBot, updateBot, setFlags,
     roomBusy, autoRoomName, retitleRoom, createRoom, updateRoom, deleteRoom,
     setMain, deleteBot, bootstrap, dropKickoff,
+    setupView, chooseWorkspace, finishSetup, workspacePath,
   })
 }

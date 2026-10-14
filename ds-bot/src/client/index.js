@@ -20,13 +20,14 @@ import { BROWSER_CSS } from './browser-pane.js'
 import { holdFlatTranscript } from './flat-transcript.js'
 import { SECRET_CSS, SecretDock } from './secret-card.js'
 import { MODEL_CSS, ModelChoiceDock, DeepSeekSignIn } from './model-menu.js'
+import { EnteringVeil, SETUP_CSS, SetupDock } from './setup.js'
 import { BOT_SETTINGS_CSS } from './bot-settings.js'
 import { GROUP_SETTINGS_CSS } from './group-settings.js'
 import { USAGE_CSS } from './usage-page.js'
 import { SCHEDULE_CSS } from './schedules.js'
 import { STORAGE, migrateStorage } from './storage.js'
 import { groupsFor, readMode, writeMode } from './surface.js'
-import { installLocale, language } from './i18n.js'
+import { installLocale, language, t } from './i18n.js'
 import { noteClientError, quietly } from './diagnostics.js'
 import { ErrorToast, FEEDBACK_CSS } from './feedback.js'
 import { ABOUT_CSS } from './about.js'
@@ -51,7 +52,7 @@ export function apply(ctx) {
   try { seenAt = JSON.parse(localStorage.getItem(SEEN_KEY) ?? '{}') ?? {} } catch { seenAt = {} }
   // `details` is the panel's subject (a Session id); `view` picks details or the
   // subject Bot's browser inside it.
-  const ui = createSource({ details: null, view: 'details', renaming: false, tab: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: savedUnread, reactions: savedReactions, visits: {} })
+  const ui = createSource({ details: null, view: 'details', renaming: false, tab: null, newChat: null, exchange: null, menu: null, voice: null, palette: null, quote: null, settings: null, memory: null, toast: null, signIn: null, renameAgent: null, unread: savedUnread, reactions: savedReactions, visits: {}, preparing: false })
   // Bot mode paints the whole team surface; Agent mode withdraws every slot and
   // style so the shell's own interface returns. `plain` stays false until a Bot-mode
   // view hosts a plain session, which drops only the conversation replacements.
@@ -280,6 +281,9 @@ export function apply(ctx) {
       const accent = isHex(prefs.accent) ? prefs.accent : undefined
       const motion = prefs.motion === 'quiet' || prefs.motion === 'lively' ? prefs.motion : 'normal'
       document.body.dataset.btMotion = motion
+      // While the first-run flow is unfinished the composer stays inert (SETUP_CSS).
+      if (snapshot.ready && snapshot.setup) document.body.dataset.btSetup = ''
+      else delete document.body.dataset.btSetup
       const next = `${id}|${accent ?? ''}|${motion}|${registry.getSnapshot()}`
       if (next === key) return
       key = next
@@ -299,6 +303,7 @@ export function apply(ctx) {
       offRegistry()
       if (typeof releaseTokens === 'function') releaseTokens()
       delete document.body.dataset.btMotion
+      delete document.body.dataset.btSetup
       style.remove()
     }
   }
@@ -368,7 +373,7 @@ export function apply(ctx) {
     // The conversation replacements withdraw for a plain Session; set the surface
     // before the navigation so the Bot skin never flashes.
     openAgentSession: (sessionId) => {
-      ui.set(state => ({ ...state, newChat: null, exchange: null, menu: null, palette: null, details: null, view: 'details', renaming: false, tab: null }))
+      ui.set(state => ({ ...state, newChat: null, exchange: null, menu: null, palette: null, details: null, view: 'details', renaming: false, tab: null, preparing: false }))
       setPlain(true)
       expected = sessionId
       ctx.uiWorkspace.openSession(sessionId)
@@ -433,7 +438,12 @@ export function apply(ctx) {
       ctx.uiWorkspace.openSession(target)
     },
     selectPanel: (id) => { ctx.layout.selectPanel(id) },
-    openNewChat: (mode) => { ui.set(state => ({ ...state, newChat: mode, menu: null, palette: null })) },
+    openNewChat: (mode) => {
+      // The sidebar + buttons rest while the first-run flow is pending; this stops
+      // the palette and any other opener from getting around them.
+      if (roster.getSnapshot().setup != null) return
+      ui.set(state => ({ ...state, newChat: mode, menu: null, palette: null }))
+    },
     openPalette: (query = '') => { ui.set(state => ({ ...state, palette: { query, token: Date.now() }, newChat: null, menu: null })) },
     // The token keeps a late exit timer from closing a palette opened again since.
     closePalette: (token) => { ui.set(state => (state.palette && (token === undefined || state.palette.token === token) ? { ...state, palette: null } : state)) },
@@ -470,27 +480,18 @@ export function apply(ctx) {
       if (mode !== 'bot' && mode !== 'agent') return
       if (surface.getSnapshot().mode === mode) return
       if (mode === 'agent') {
-        ui.set(state => ({ ...state, details: null, view: 'details', settings: null, palette: null, newChat: null, menu: null, voice: null, exchange: null, memory: null, toast: null }))
+        ui.set(state => ({ ...state, details: null, view: 'details', settings: null, palette: null, newChat: null, menu: null, voice: null, exchange: null, memory: null, toast: null, preparing: false }))
       }
       writeMode(mode)
       surface.set(state => ({ ...state, mode }))
       if (mode !== 'bot') return
-      // Back in Bot mode the view must hold a team conversation; an outside
-      // Session left over from Agent mode would wear the Bot skin without one.
-      const home = () => {
-        const snapshot = roster.getSnapshot()
-        if (!snapshot.ready || !snapshot.mainBotId) return
-        const list = ctx.sessions.list.getSnapshot()
-        const main = Object.values(list.byId ?? {}).find(session => (session?.retainedBy?.mainView ?? 0) > 0)?.id
-        if (main !== undefined && snapshot.byId[main] === undefined && snapshot.roomsById[main] === undefined) {
-          actions.openSession(snapshot.mainBotId)
-        }
-      }
       if (roster.getSnapshot().ready) home()
       else {
+        awaitRosterForHome()
         const off = roster.subscribe(() => {
           if (!roster.getSnapshot().ready) return
           off()
+          clearPreparing()
           home()
         })
       }
@@ -534,6 +535,16 @@ export function apply(ctx) {
     createRoom: (members, options = {}) => after(call('create-room', { members, ...options })),
     updateBot: (id, patch) => after(call('update-bot', { id, ...patch })),
     refreshModels: () => after(call('models')).catch(() => {}),
+    // The host's own chooser: the operating system's dialog. DSH composes that backend
+    // only where it can serve one, and refuses the verb elsewhere instead of
+    // approximating it (host/directory-picker-auto/src/resolve.ts).
+    pickDirectory: () => {
+      const pick = ctx.uiWorkspace?.pickDirectory
+      if (typeof pick !== 'function') return Promise.reject(new Error(t('No directory chooser is available here')))
+      return Promise.resolve(pick.call(ctx.uiWorkspace))
+    },
+    chooseWorkspace: path => after(call('choose-workspace', { path })),
+    finishSetup: payload => after(call('finish-setup', payload)),
     efforts: ref => call('efforts', { ref }),
     deleteBot: id => after(call('delete-bot', { id })),
     duplicateBot: id => after(call('duplicate-bot', { id })),
@@ -691,6 +702,61 @@ export function apply(ctx) {
     delete next[sessionId]
     return next
   })
+  // Entering Bot mode before the roster answers veils the stale main view instead
+  // of showing its content for a poll beat. The veil lifts on roster-ready (and the
+  // flow continues with home()), on leaving Bot mode, and on a timeout alike, so it
+  // can never stick.
+  let preparingTimer = null
+  const clearPreparing = () => {
+    if (preparingTimer !== null) { clearTimeout(preparingTimer); preparingTimer = null }
+    ui.set(state => (state.preparing ? { ...state, preparing: false } : state))
+  }
+  const awaitRosterForHome = () => {
+    ui.set(state => (state.preparing ? state : { ...state, preparing: true }))
+    if (preparingTimer !== null) clearTimeout(preparingTimer)
+    preparingTimer = setTimeout(() => {
+      preparingTimer = null
+      console.warn('[ds-bot] entering: roster still not ready; lifting the veil')
+      ui.set(state => (state.preparing ? { ...state, preparing: false } : state))
+    }, 10000)
+  }
+  // Back in Bot mode the view must hold a team conversation: an outside Session
+  // left over from Agent mode would otherwise sit in the main view wearing the
+  // Bot skin. With no team yet the same leftover would sit in place of the hero,
+  // so open a fresh blank conversation for the first-run flow instead (one that
+  // is already blank needs nothing; a failed start leaves the selection as is).
+  // One attempt per stale Session: the navigation itself re-triggers the check.
+  // startSession is the documented "new conversation" verb, but an older shell
+  // may not carry it: the recovery must never break the surface it heals, so a
+  // missing verb or a failed start only leaves a console warning behind.
+  let homedFor = null
+  const openBlank = () => {
+    const start = ctx.uiWorkspace?.startSession
+    if (typeof start !== 'function') {
+      console.warn('[ds-bot] home: uiWorkspace.startSession is unavailable')
+      return
+    }
+    try {
+      start.call(ctx.uiWorkspace)
+    } catch (error) {
+      console.warn('[ds-bot] home: startSession failed', error)
+    }
+  }
+  const home = () => {
+    const snapshot = roster.getSnapshot()
+    if (!snapshot.ready) return
+    const list = ctx.sessions.list.getSnapshot()
+    const main = Object.values(list.byId ?? {}).find(session => (session?.retainedBy?.mainView ?? 0) > 0)?.id
+    if (main === undefined || snapshot.byId[main] !== undefined || snapshot.roomsById[main] !== undefined) return
+    if (!snapshot.mainBotId) {
+      if (list.byId[main]?.blank !== true && homedFor !== main) {
+        homedFor = main
+        openBlank()
+      }
+      return
+    }
+    actions.openSession(snapshot.mainBotId)
+  }
   const browserPages = browsers?.pages ?? createSource({})
   const browserTabs = browsers?.tabs ?? createSource({})
   const face = () => ({ actions, hooks: { roster, ui, activity, work, memoryNews, registry, turnClock, live, browserPages, browserTabs, surface, update } })
@@ -750,7 +816,7 @@ export function apply(ctx) {
     installCompiledStyles(SHELL_CSS, 'shell'),
     installCompiledStyles(SIDEBAR_CSS, 'sidebar'),
     installCompiledStyles(SECRET_CSS, 'secrets'),
-    installCompiledStyles(MODEL_CSS + BOT_SETTINGS_CSS + GROUP_SETTINGS_CSS, 'models'),
+    installCompiledStyles(MODEL_CSS + SETUP_CSS + BOT_SETTINGS_CSS + GROUP_SETTINGS_CSS, 'models'),
     installCompiledStyles(USAGE_CSS, 'usage'),
     installCompiledStyles(SCHEDULE_CSS, 'schedules'),
     installCompiledStyles(FEEDBACK_CSS, 'feedback'),
@@ -773,6 +839,8 @@ export function apply(ctx) {
     shadow('shell.overlay', { id: 'bot', order: 50, inject: face }, Overlays),
     shadow('shell.overlay', { id: 'bot-signin', order: 55, inject: face }, DeepSeekSignIn),
     shadow('shell.overlay', { id: 'bot-toast', order: 60, inject: face }, ErrorToast),
+    // Below every dialog: the entering veil only ever covers page content.
+    shadow('shell.overlay', { id: 'bot-preparing', order: 44, inject: face }, EnteringVeil),
   ]
   const installConversation = () => [
     installCompiledStyles(CONVERSATION_CSS, 'conversation'),
@@ -807,6 +875,7 @@ export function apply(ctx) {
       select: owner => (owner.pendingInteraction?.kind === 'question' ? owner.pendingInteraction : null),
     }, QuestionCard),
     shadow('conversation.input.dock', { id: 'bot-members', order: -120, inject: face }, MemberDock),
+    shadow('conversation.input.dock', { id: 'bot-setup', order: -130, inject: face }, SetupDock),
     shadow('conversation.input.dock', { id: 'bot-model', order: -110, inject: face }, ModelChoiceDock),
     shadow('conversation.input.dock', { id: 'bot-question', order: -100, inject: face }, QuestionDock),
     shadow('conversation.input.dock', { id: 'bot-secret', order: -90, inject: face }, SecretDock),
@@ -839,6 +908,13 @@ export function apply(ctx) {
       // Adoption is a Bot-mode affair: in Agent mode the native sidebar owns
       // navigation, and opening an existing Session there must not pull it in.
       if (surface.getSnapshot().mode !== 'bot') return
+      // No team yet (first run): a stale foreign Session must not sit in the main
+      // view in place of the hero. home() no-ops once the blank Session lands, and
+      // it needs no team, so this also covers reloads (setSurface never runs then).
+      if (!roster.getSnapshot().mainBotId) {
+        home()
+        return
+      }
       const agentId = before !== undefined ? agentOfSession(before) : undefined
       if (agentId === undefined) return
       const snapshot = roster.getSnapshot()

@@ -67,6 +67,14 @@ function start(team, { models = [], reasoning = {}, archiveError } = {}) {
 }
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 20))
+// A new team is made by the first-run flow (roster.js): the folder, then the model.
+// Tests that start with no team walk it here unless they drive that flow themselves.
+async function boot(call, model = 'deepseek/deepseek-v4-flash') {
+  if (!(await call('state', {})).value.setup) return
+  await call('choose-workspace', { path: join(tmpdir(), 'ds-bot-roster-workspace') })
+  const done = await call('finish-setup', { model })
+  assert.equal(done.ok, true, done.error?.message)
+}
 // A greeting goes out after the team is saved, which can take longer than one settle() on a
 // busy machine.
 const until = async (check) => {
@@ -77,24 +85,36 @@ const until = async (check) => {
   }
 }
 
-test('the first Main Bot waits for the user to pick a model, then greets', async (t) => {
+test('the first-run flow makes the team once a folder and a model are picked', async (t) => {
   const { call, stop, sent, selected } = start(undefined, { models: ['deepseek-v4-flash', 'deepseek-v4-pro'] })
   t.after(stop)
+
+  // Opening the window makes nothing: the folder is the first step.
   let team = (await call('state', {})).value
-  let main = team.bots.find(bot => bot.id === team.mainBotId)
-  await settle()
-  assert.equal(main.model, undefined)
-  assert.equal(main.waiting, true)
-  assert.equal(main.kickoff, undefined)
-  assert.equal(sent.length, 0)
-  assert.equal(selected.length, 0)
+  assert.equal(team.mainBotId, null)
+  assert.deepEqual(team.bots, [])
+  assert.equal(team.setup.step, 'workspace')
+  assert.equal(team.setup.workspace, null)
+  assert.equal(typeof team.setup.defaultWorkspace, 'string')
   assert.deepEqual(team.models.map(model => model.ref), ['deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-pro'])
   assert.equal(team.defaultModel, 'deepseek/deepseek-v4-flash')
+  // A relative folder is refused.
+  assert.equal((await call('choose-workspace', { path: 'relative/folder' })).ok, false)
 
-  assert.equal((await call('update-bot', { id: main.id, model: 'deepseek/deepseek-v4-pro' })).ok, true)
+  // Picking the folder moves to the model step; the team still does not exist.
+  const picked = join(tmpdir(), 'ds-bot-first-run')
+  assert.equal((await call('choose-workspace', { path: picked })).value.step, 'model')
+  const waiting = (await call('state', {})).value
+  assert.equal(waiting.setup.workspace, picked)
+  assert.equal(waiting.mainBotId, null)
+
+  // The model finishes it: the Bot exists on that model and greets once.
+  assert.equal((await call('finish-setup', { model: 'deepseek/deepseek-v4-pro' })).ok, true)
   await settle()
   team = (await call('state', {})).value
-  main = team.bots.find(bot => bot.id === team.mainBotId)
+  const main = team.bots.find(bot => bot.id === team.mainBotId)
+  assert.equal(team.setup, null)
+  assert.equal(main.name, 'Chief')
   assert.equal(main.model, 'deepseek/deepseek-v4-pro')
   assert.equal(main.waiting, undefined)
   assert.deepEqual(selected.map(({ sessionId, model }) => [sessionId, model]), [[main.id, 'deepseek-v4-pro']])
@@ -108,9 +128,33 @@ test('the first Main Bot waits for the user to pick a model, then greets', async
   assert.equal(sent.length, 1)
 })
 
+test('making Bots and rooms waits for the first-run flow', async (t) => {
+  const { call, stop } = start(undefined, { models: ['deepseek-v4-flash'] })
+  t.after(stop)
+  assert.equal((await call('state', {})).value.setup.step, 'workspace')
+  // Nothing is made and no folder is bound: the refusal carries the reason.
+  for (const refused of [call('create-bot', { name: 'Writer' }), call('create-room', { members: [] })]) {
+    const answer = await refused
+    assert.equal(answer.ok, false)
+    assert.equal(answer.error.code, 'bot/invalid')
+  }
+  const still = (await call('state', {})).value
+  assert.equal(still.setup.step, 'workspace')
+  assert.equal(still.workspaceId, null)
+  assert.deepEqual(still.bots, [])
+  // The flow itself still works, and making Bots works after it.
+  await boot(call)
+  assert.equal((await call('create-bot', { name: 'Writer' })).ok, true)
+})
+
 test('other Bots start on the default model and greet at once', async (t) => {
   const { call, stop, sent } = start(undefined, { models: ['deepseek-v4-flash'] })
   t.after(stop)
+  await boot(call)
+  // Chief's own greeting lands first; only the new Bot's may follow.
+  await until(() => sent.length > 0)
+  await settle()
+  sent.length = 0
   await call('state', {})
   const writer = (await call('create-bot', { name: 'Writer' })).value
   await until(() => sent.length > 0)
@@ -122,6 +166,7 @@ test('other Bots start on the default model and greet at once', async (t) => {
 test('a new name must be one "@" can call; a name saved before the rule still saves', async (t) => {
   const { call, stop } = start(undefined, { models: ['deepseek-v4-flash'] })
   t.after(stop)
+  await boot(call)
   await call('state', {})
   for (const name of ['a@b', 'All', '所有人']) assert.equal((await call('create-bot', { name })).ok, false, name)
   const writer = (await call('create-bot', { name: 'Writer 2' })).value
@@ -132,6 +177,7 @@ test('a new name must be one "@" can call; a name saved before the rule still sa
 test('a group the user makes without a first message opens with its admin asking what it is for', async (t) => {
   const { call, stop, sent, ctx, home } = start(undefined, { models: ['deepseek-v4-flash'] })
   t.after(stop)
+  await boot(call)
   const chief = (await call('state', {})).value.mainBotId
   const writer = (await call('create-bot', { name: 'Writer' })).value
   await until(() => sent.some(entry => entry.sessionId === writer.id))
@@ -164,6 +210,7 @@ test('a Bot takes a thinking level its model serves, applied with the model', as
   const reasoning = { 'deepseek/deepseek-v4-flash': { reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'high' } } }
   const { call, stop, selected } = start(undefined, { models: ['deepseek-v4-flash'], reasoning })
   t.after(stop)
+  await boot(call)
   const chief = (await call('state', {})).value.mainBotId
   await call('update-bot', { id: chief, model: 'deepseek/deepseek-v4-flash' })
   await settle()
@@ -198,8 +245,9 @@ test('the state reports a changed model list without a new revision', async (t) 
 })
 
 test('a new team starts with a DeepSeek-blue whale as its Main Bot', async (t) => {
-  const { call, stop } = start()
+  const { call, stop } = start(undefined, { models: ['deepseek-v4-flash'] })
   t.after(stop)
+  await boot(call)
   const team = (await call('state', {})).value
   assert.equal(team.mainBotIds.length, 1)
   const main = team.bots.find(bot => bot.id === team.mainBotId)
@@ -252,8 +300,9 @@ test('a team from before the whale was stored gets it once, on its first Main Bo
 })
 
 test('another Bot takes the Main Bot place in one step', async (t) => {
-  const { call, stop } = start()
+  const { call, stop } = start(undefined, { models: ['deepseek-v4-flash'] })
   t.after(stop)
+  await boot(call)
   const chief = (await call('state', {})).value.mainBotId
   const writer = (await call('create-bot', { name: 'Writer' })).value
   const team = (await call('set-main', { id: writer.id, main: true, replace: chief })).value
@@ -269,8 +318,9 @@ test('another Bot takes the Main Bot place in one step', async (t) => {
 })
 
 test('a Main Bot moves to the front and the others keep their order', async (t) => {
-  const { call, stop } = start()
+  const { call, stop } = start(undefined, { models: ['deepseek-v4-flash'] })
   t.after(stop)
+  await boot(call)
   const chief = (await call('state', {})).value.mainBotId
   const writer = (await call('create-bot', { name: 'Writer' })).value
   const reader = (await call('create-bot', { name: 'Reader' })).value
@@ -283,8 +333,9 @@ test('a Main Bot moves to the front and the others keep their order', async (t) 
 })
 
 test('set-main keeps one Main Bot and replaces only a Main Bot', async (t) => {
-  const { call, stop } = start()
+  const { call, stop } = start(undefined, { models: ['deepseek-v4-flash'] })
   t.after(stop)
+  await boot(call)
   const chief = (await call('state', {})).value.mainBotId
   const writer = (await call('create-bot', { name: 'Writer' })).value
   const reader = (await call('create-bot', { name: 'Reader' })).value
@@ -298,6 +349,7 @@ test('set-main keeps one Main Bot and replaces only a Main Bot', async (t) => {
 test('deleting a Bot or group chat stops its Session, so its tasks are removed', async (t) => {
   const { call, stop, archived } = start(undefined, { models: ['deepseek-v4-flash'] })
   t.after(stop)
+  await boot(call)
   const chief = (await call('state', {})).value.mainBotId
   const writer = (await call('create-bot', { name: 'Writer' })).value
   const room = (await call('create-room', { members: [chief, writer.id], admin: writer.id })).value
@@ -343,6 +395,7 @@ test("deleting a Bot also stops its past parts' Sessions, where tasks can stay a
 test('an archive failure on delete is warned instead of passing silently', async (t) => {
   const { call, stop, warnings } = start(undefined, { models: ['deepseek-v4-flash'], archiveError: new Error('archive refused') })
   t.after(stop)
+  await boot(call)
   const writer = (await call('create-bot', { name: 'Writer' })).value
   assert.equal((await call('delete-bot', { id: writer.id })).ok, true)
   await settle()
@@ -352,6 +405,7 @@ test('an archive failure on delete is warned instead of passing silently', async
 test('a hidden Bot made Main Bot shows again, and a replaced Chief drops its held greeting', async (t) => {
   const { call, stop, sent } = start(undefined, { models: ['deepseek-v4-flash'] })
   t.after(stop)
+  await boot(call)
   const chief = (await call('state', {})).value.mainBotId
   const writer = (await call('create-bot', { name: 'Writer' })).value
   await call('set-flags', { id: writer.id, hidden: true })

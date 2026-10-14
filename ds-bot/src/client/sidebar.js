@@ -214,6 +214,9 @@ export function TeamSidebar(props) {
   const { wide, useRoster, useUi, useSessions, actions } = props
   const listRef = useRef(null)
   const roster = useRoster(value => value)
+  // Before the first Main Bot exists nothing may be made: an early Bot would bind
+  // the workspace to the default folder. The host refuses anyway; the buttons rest.
+  const settingUp = roster.setup != null
   const markedUnread = useUi(value => value.unread)
   props.useRegistry(value => value)
   const updated = useSessions(list => {
@@ -247,10 +250,10 @@ export function TeamSidebar(props) {
       h('span', { className: 'bt-brand' }, h(BrandMark, { size: 22 }), h(BrandName)),
       h(UpdateButton, { useUpdate: props.useUpdate, actions }),
       h('button', { type: 'button', className: 'bt-round', 'aria-label': t('Search'), title: t('Search'), onClick: () => actions.openPalette() }, h(SearchIcon)),
-      h('button', { type: 'button', className: 'bt-round', 'aria-label': t('New…'), title: t('New…'), onClick: () => actions.openNewChat('new') }, h(PlusIcon)))
+      h('button', { type: 'button', className: 'bt-round', disabled: settingUp, 'aria-label': t('New…'), title: settingUp ? t('Finish the first-run setup first') : t('New…'), onClick: () => actions.openNewChat('new') }, h(PlusIcon)))
       : h(Fragment, null,
           h(UpdateButton, { useUpdate: props.useUpdate, actions }),
-          h('button', { type: 'button', className: 'bt-round', 'aria-label': t('New…'), title: t('New…'), onClick: () => actions.openNewChat('new') }, h(PlusIcon))),
+          h('button', { type: 'button', className: 'bt-round', disabled: settingUp, 'aria-label': t('New…'), title: settingUp ? t('Finish the first-run setup first') : t('New…'), onClick: () => actions.openNewChat('new') }, h(PlusIcon))),
     wide && roster.readOnly ? h('div', { className: 'bt-hint bt-read-only', role: 'status' }, hostText(roster.readOnly)) : null,
     h('div', { ref: listRef, className: 'bt-list', role: 'region', 'aria-label': t('Bot list') },
       main ? h(BotRow, { ...rowProps, bot: main, marked: markedUnread[main.id] === true }) : roster.ready ? null : h('div', { className: 'bt-hint' }, t('Setting up your Main Bot…')),

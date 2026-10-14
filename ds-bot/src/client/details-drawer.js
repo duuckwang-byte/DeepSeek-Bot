@@ -232,6 +232,9 @@ export function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, ro
           h('div', { className: 'bt-section-title' }, t('Model')),
           h(ModelMenu, { bot, roster, actions, run, wide: true }),
           modelOf(bot, roster) ? null : h('div', { className: 'bt-note' }, t('Pick a model and {name} can start.', { name: bot.name }))),
+        h('div', { key: 'folder', className: 'bt-drawer-model' },
+          h('div', { className: 'bt-section-title' }, t('Working folder')),
+          h('div', { className: 'bt-drawer-folder', title: roster.workspace ?? '' }, roster.workspace ?? '')),
         h(PermissionRow, { key: 'permission', bot, roster, actions, run }),
         bot.instructions
           ? h(About, { key: 'about', text: bot.instructions })

@@ -116,6 +116,11 @@ const waitFor = async (check) => {
 const turnFor = (sent, ...earlier) => waitFor(() => sent.find(entry => !earlier.includes(entry) && entry.message.source.role === 'room'))
 
 async function team(call, sent) {
+  // A new team is made by the first-run flow: the folder first, then the model.
+  if ((await call('state', {})).value.setup) {
+    await call('choose-workspace', { path: join(tmpdir(), 'ds-bot-rounds-workspace') })
+    await call('finish-setup', { model: 'deepseek/deepseek-v4-flash' })
+  }
   const chief = (await call('state', {})).value.mainBotId
   const writer = (await call('create-bot', { name: 'Writer' })).value
   const room = (await call('create-room', { name: 'R1', members: [chief, writer.id] })).value
