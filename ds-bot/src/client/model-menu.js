@@ -99,8 +99,9 @@ function ModelRows({ roster, current, onPick }) {
 export const Caret = () => h('svg', { className: 'bt-model-caret', width: 12, height: 12, viewBox: '0 0 20 20', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true }, h('path', { d: 'M5.5 8l4.5 4.5L14.5 8' }))
 
 // A menu that opens under its trigger, or above when the window has no room below. A
-// click outside, Escape, or a scroll outside it closes it.
-export function useAnchoredMenu() {
+// click outside, Escape, or a scroll outside it closes it. Refs in `extraRefs` (the
+// thinking float) count as inside.
+export function useAnchoredMenu(extraRefs = []) {
   const [place, setPlace] = useState(null)
   const [shownPlace, leaving] = useLinger(place, MENU_EXIT_MS)
   const button = useRef(null)
@@ -110,10 +111,15 @@ export function useAnchoredMenu() {
     if (place === null) return undefined
     const onDown = (event) => {
       if (menu.current?.contains(event.target) || button.current?.contains(event.target)) return
+      if (extraRefs.some(ref => ref.current?.contains(event.target))) return
       close()
     }
     const onKey = (event) => { if (event.key === 'Escape') { event.stopPropagation(); close(); button.current?.focus() } }
-    const onScroll = (event) => { if (!menu.current?.contains(event.target)) close() }
+    const onScroll = (event) => {
+      if (menu.current?.contains(event.target)) return
+      if (extraRefs.some(ref => ref.current?.contains(event.target))) return
+      close()
+    }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey, true)
     window.addEventListener('scroll', onScroll, true)
@@ -135,11 +141,33 @@ export function useAnchoredMenu() {
   return { isOpen: place !== null, shownPlace, leaving, button, menu, open, close }
 }
 
+// Thinking levels ride in a float to the left of the model menu, for the model the
+// last click chose; choosing a level applies the model with it and closes both. A
+// model without levels applies on its own through `onEmpty`, as a plain click did.
+function EffortFloat({ modelRef, bot, current, roster, actions, onApply, onEmpty, panelRef, style }) {
+  const served = servedOf(roster, modelRef)
+  const reasoning = useEfforts(served, modelRef, actions)
+  const name = served?.name ?? modelRef.split('/').slice(1).join('/')
+  const active = modelRef === current
+    ? (reasoning?.efforts?.some(effort => effort.id === bot.effort) ? bot.effort : undefined)
+    : reasoning?.defaultEffort
+  const empty = reasoning !== undefined && (reasoning?.efforts ?? []).length === 0
+  useEffect(() => { if (empty) onEmpty() }, [empty])
+  return createPortal(h('div', { ref: panelRef, className: 'bt-menu bt-model-menu', role: 'menu', 'aria-label': t('Thinking level'), style },
+    h('div', { className: 'bt-model-group', role: 'presentation' }, `${name} · ${t('Thinking level')}`),
+    reasoning === undefined
+      ? h('div', { className: 'bt-model-none' }, h('span', { className: 'bt-model-spin', 'aria-hidden': true }), ` ${t('Loading…')}`)
+      : h(EffortRows, { reasoning, current: active, onPick: effort => onApply(modelRef, effort) })), document.body)
+}
+
 // The trigger shows the model name over its provider. A Thinking section lists the
 // levels of the shown model when it has them.
 // `onPick`/`onPickEffort` replace saving to the Bot, for a Bot that does not exist yet.
 export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort }) {
-  const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu()
+  const effortPanel = useRef(null)
+  const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu([effortPanel])
+  const [effortFor, setEffortFor] = useState(null)
+  useEffect(() => { if (!isOpen) setEffortFor(null) }, [isOpen])
   const shown = modelOf(bot, roster)
   const current = bot.model ?? bot.appliedModel
   const served = servedOf(roster, current)
@@ -156,15 +184,36 @@ export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onP
     void actions?.refreshModels?.()
     open()
   }
-  const pick = (ref) => {
-    close()
-    if (onPick) onPick(ref)
-    else if (ref !== current || !bot.model) void run(actions.updateBot(bot.id, { model: ref }))
+  // A model row opens its thinking levels instead of picking: the level click
+  // applies the model with it, so the two always land together.
+  const askEffort = (ref) => { setEffortFor(ref) }
+  const closeAll = () => { setEffortFor(null); close() }
+  const applyBoth = (ref, effort) => {
+    closeAll()
+    if (onPick || onPickEffort) { onPick?.(ref); onPickEffort?.(effort); return }
+    void run((async () => {
+      if (ref === current) {
+        if ((effort ?? null) !== (bot.effort ?? null)) await actions.updateBot(bot.id, { effort: effort ?? null })
+      } else {
+        await actions.updateBot(bot.id, { model: ref, effort: effort ?? null })
+      }
+    })())
   }
-  const pickEffort = (effort) => {
-    close()
-    if (onPickEffort) onPickEffort(effort)
-    else if (effort !== bot.effort) void run(actions.updateBot(bot.id, { effort: effort ?? null }))
+  const autoApply = () => {
+    const ref = effortFor
+    closeAll()
+    if (onPick || onPickEffort) { onPick?.(ref); return }
+    if (ref !== current) void run(actions.updateBot(bot.id, { model: ref }))
+  }
+  const floatStyle = () => {
+    const rect = menu.current?.getBoundingClientRect()
+    const width = 232
+    if (!rect) return { width }
+    const left = rect.left - width - 8 >= 8
+      ? rect.left - width - 8
+      : Math.min(Math.max(8, rect.right + 8), Math.max(8, window.innerWidth - width - 8))
+    const top = Math.max(8, rect.top)
+    return { left, top, width, maxHeight: Math.max(140, window.innerHeight - top - 8) }
   }
   const models = roster.models ?? []
   return h(Fragment, null,
@@ -180,11 +229,14 @@ export function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onP
         : t('{provider} · not available', { provider: shown.provider })) : null),
     h(Caret)),
     shownPlace ? createPortal(h('div', { ref: menu, className: `bt-menu bt-model-menu${shownPlace.bottom !== undefined ? ' bt-menu-up' : ''}`, role: 'menu', 'aria-label': t('Model for {name}', { name: bot.name }), style: shownPlace, 'data-leaving': leaving || undefined },
-      models.length > 0 ? h(ModelRows, { roster, current, onPick: pick })
+      models.length > 0 ? h(ModelRows, { roster, current, onPick: askEffort })
         : h('div', { className: 'bt-model-none' }, t('No models are set up in DeepSeek Harness yet.')),
-      effortRows(reasoning).length > 0 ? h(EffortRows, { reasoning, current: picked, onPick: pickEffort }) : null,
       h('div', { className: 'bt-menu-sep', role: 'separator' }),
-      h('button', { type: 'button', role: 'menuitem', onClick: () => { close(); openHarnessSettings() } }, h(SlidersIcon), h('span', { className: 'bt-menu-label' }, t('Models and providers…')))), document.body) : null)
+      h('button', { type: 'button', role: 'menuitem', onClick: () => { close(); openHarnessSettings() } }, h(SlidersIcon), h('span', { className: 'bt-menu-label' }, t('Models and providers…')))), document.body) : null,
+    shownPlace && effortFor ? createPortal(h(EffortFloat, {
+      key: effortFor, modelRef: effortFor, bot, current, roster, actions,
+      onApply: applyBoth, onEmpty: autoApply, panelRef: effortPanel, style: floatStyle(),
+    }), document.body) : null)
 }
 
 // The card a Bot's chat opens on while the Bot has no model, or has one that is no

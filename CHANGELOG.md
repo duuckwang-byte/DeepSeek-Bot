@@ -4,6 +4,16 @@ All notable changes to DS Bot are listed here. The format follows [Keep a Change
 
 ## [Unreleased]
 
+### Added
+
+- **First-run setup**: opening the window no longer makes the team. The right pane walks you through the team's working folder, then the model for the first Main Bot; only after both are chosen is the folder adopted as the team workspace and the team made. Until then the composer stays inert, and making Bots, group chats or agents waits for the setup (the sidebar + buttons rest, and the host refuses).
+- **Thinking levels in their own float**: picking a model in its menu opens the model's thinking levels in a float to the left of the menu; choosing a level applies the model with it and closes both. Switching models switches the float to the new model's levels. Models without levels apply on click as before.
+- The working-folder menu shows the team's current folder under "Team workspace", on the button and on the list entry.
+
+### Fixed
+
+- Entering Bot mode with no team no longer leaves the previous conversation on screen: the view opens a fresh blank conversation instead, with a "getting the team ready" veil while the roster loads.
+
 ## [0.1.5] - 2026-10-13
 
 ### Added

@@ -2247,8 +2247,6 @@ button.bt-q-opt:active{background:var(--bt-active)}
 .bt-set-body{gap:20px}
 .bt-drawer-model{display:flex;flex-direction:column}
 .bt-drawer-model .bt-note{margin-top:6px}
-/* The folder the Bots work in: one path, readable in full even when it is long. */
-.bt-drawer-folder{margin-top:6px;font-size:12px;line-height:18px;color:var(--bt-ink-2);word-break:break-all;user-select:text}
 .bt-drawer-permission{display:flex;flex-direction:column}
 .bt-seg button.bt-perm-danger,.bt-seg button.bt-perm-danger[aria-pressed=true]{color:#e02135}
 
@@ -6461,7 +6459,7 @@ function ModelRows({ roster, current, onPick }) {
   ));
 }
 var Caret = () => (0, import_react13.createElement)("svg", { className: "bt-model-caret", width: 12, height: 12, viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true }, (0, import_react13.createElement)("path", { d: "M5.5 8l4.5 4.5L14.5 8" }));
-function useAnchoredMenu() {
+function useAnchoredMenu(extraRefs = []) {
   const [place, setPlace] = (0, import_react13.useState)(null);
   const [shownPlace, leaving] = useLinger(place, MENU_EXIT_MS);
   const button = (0, import_react13.useRef)(null);
@@ -6471,6 +6469,7 @@ function useAnchoredMenu() {
     if (place === null) return void 0;
     const onDown = (event) => {
       if (menu.current?.contains(event.target) || button.current?.contains(event.target)) return;
+      if (extraRefs.some((ref) => ref.current?.contains(event.target))) return;
       close();
     };
     const onKey = (event) => {
@@ -6481,7 +6480,9 @@ function useAnchoredMenu() {
       }
     };
     const onScroll = (event) => {
-      if (!menu.current?.contains(event.target)) close();
+      if (menu.current?.contains(event.target)) return;
+      if (extraRefs.some((ref) => ref.current?.contains(event.target))) return;
+      close();
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey, true);
@@ -6501,8 +6502,29 @@ function useAnchoredMenu() {
   };
   return { isOpen: place !== null, shownPlace, leaving, button, menu, open, close };
 }
+function EffortFloat({ modelRef, bot, current, roster, actions, onApply, onEmpty, panelRef, style }) {
+  const served = servedOf(roster, modelRef);
+  const reasoning = useEfforts(served, modelRef, actions);
+  const name = served?.name ?? modelRef.split("/").slice(1).join("/");
+  const active = modelRef === current ? reasoning?.efforts?.some((effort) => effort.id === bot.effort) ? bot.effort : void 0 : reasoning?.defaultEffort;
+  const empty = reasoning !== void 0 && (reasoning?.efforts ?? []).length === 0;
+  (0, import_react13.useEffect)(() => {
+    if (empty) onEmpty();
+  }, [empty]);
+  return (0, import_react_dom6.createPortal)((0, import_react13.createElement)(
+    "div",
+    { ref: panelRef, className: "bt-menu bt-model-menu", role: "menu", "aria-label": t("Thinking level"), style },
+    (0, import_react13.createElement)("div", { className: "bt-model-group", role: "presentation" }, `${name} · ${t("Thinking level")}`),
+    reasoning === void 0 ? (0, import_react13.createElement)("div", { className: "bt-model-none" }, (0, import_react13.createElement)("span", { className: "bt-model-spin", "aria-hidden": true }), ` ${t("Loading…")}`) : (0, import_react13.createElement)(EffortRows, { reasoning, current: active, onPick: (effort) => onApply(modelRef, effort) })
+  ), document.body);
+}
 function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffort }) {
-  const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu();
+  const effortPanel = (0, import_react13.useRef)(null);
+  const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu([effortPanel]);
+  const [effortFor, setEffortFor] = (0, import_react13.useState)(null);
+  (0, import_react13.useEffect)(() => {
+    if (!isOpen) setEffortFor(null);
+  }, [isOpen]);
   const shown = modelOf(bot, roster);
   const current = bot.model ?? bot.appliedModel;
   const served = servedOf(roster, current);
@@ -6518,15 +6540,44 @@ function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffo
     void actions?.refreshModels?.();
     open();
   };
-  const pick2 = (ref) => {
-    close();
-    if (onPick) onPick(ref);
-    else if (ref !== current || !bot.model) void run(actions.updateBot(bot.id, { model: ref }));
+  const askEffort = (ref) => {
+    setEffortFor(ref);
   };
-  const pickEffort = (effort) => {
+  const closeAll = () => {
+    setEffortFor(null);
     close();
-    if (onPickEffort) onPickEffort(effort);
-    else if (effort !== bot.effort) void run(actions.updateBot(bot.id, { effort: effort ?? null }));
+  };
+  const applyBoth = (ref, effort) => {
+    closeAll();
+    if (onPick || onPickEffort) {
+      onPick?.(ref);
+      onPickEffort?.(effort);
+      return;
+    }
+    void run((async () => {
+      if (ref === current) {
+        if ((effort ?? null) !== (bot.effort ?? null)) await actions.updateBot(bot.id, { effort: effort ?? null });
+      } else {
+        await actions.updateBot(bot.id, { model: ref, effort: effort ?? null });
+      }
+    })());
+  };
+  const autoApply = () => {
+    const ref = effortFor;
+    closeAll();
+    if (onPick || onPickEffort) {
+      onPick?.(ref);
+      return;
+    }
+    if (ref !== current) void run(actions.updateBot(bot.id, { model: ref }));
+  };
+  const floatStyle = () => {
+    const rect = menu.current?.getBoundingClientRect();
+    const width = 232;
+    if (!rect) return { width };
+    const left = rect.left - width - 8 >= 8 ? rect.left - width - 8 : Math.min(Math.max(8, rect.right + 8), Math.max(8, window.innerWidth - width - 8));
+    const top = Math.max(8, rect.top);
+    return { left, top, width, maxHeight: Math.max(140, window.innerHeight - top - 8) };
   };
   const models = roster.models ?? [];
   return (0, import_react13.createElement)(
@@ -6556,14 +6607,25 @@ function ModelMenu({ bot, roster, actions, run, wide = false, onPick, onPickEffo
     shownPlace ? (0, import_react_dom6.createPortal)((0, import_react13.createElement)(
       "div",
       { ref: menu, className: `bt-menu bt-model-menu${shownPlace.bottom !== void 0 ? " bt-menu-up" : ""}`, role: "menu", "aria-label": t("Model for {name}", { name: bot.name }), style: shownPlace, "data-leaving": leaving || void 0 },
-      models.length > 0 ? (0, import_react13.createElement)(ModelRows, { roster, current, onPick: pick2 }) : (0, import_react13.createElement)("div", { className: "bt-model-none" }, t("No models are set up in DeepSeek Harness yet.")),
-      effortRows(reasoning).length > 0 ? (0, import_react13.createElement)(EffortRows, { reasoning, current: picked, onPick: pickEffort }) : null,
+      models.length > 0 ? (0, import_react13.createElement)(ModelRows, { roster, current, onPick: askEffort }) : (0, import_react13.createElement)("div", { className: "bt-model-none" }, t("No models are set up in DeepSeek Harness yet.")),
       (0, import_react13.createElement)("div", { className: "bt-menu-sep", role: "separator" }),
       (0, import_react13.createElement)("button", { type: "button", role: "menuitem", onClick: () => {
         close();
         openHarnessSettings();
       } }, (0, import_react13.createElement)(SlidersIcon), (0, import_react13.createElement)("span", { className: "bt-menu-label" }, t("Models and providers…")))
-    ), document.body) : null
+    ), document.body) : null,
+    shownPlace && effortFor ? (0, import_react_dom6.createPortal)((0, import_react13.createElement)(EffortFloat, {
+      key: effortFor,
+      modelRef: effortFor,
+      bot,
+      current,
+      roster,
+      actions,
+      onApply: applyBoth,
+      onEmpty: autoApply,
+      panelRef: effortPanel,
+      style: floatStyle()
+    }), document.body) : null
   );
 }
 function ModelChoiceDock({ sessionId, useRoster, actions }) {
@@ -6698,7 +6760,7 @@ var import_react14 = require("react");
 var import_react_dom7 = require("react-dom");
 var folderName = (path) => String(path).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || String(path);
 var Tick = ({ on }) => (0, import_react14.createElement)("span", { className: "bt-model-tick", "aria-hidden": true }, on ? (0, import_react14.createElement)(CheckIcon) : null);
-function FolderMenu({ value, group = false, actions, run, onPick, wide = false }) {
+function FolderMenu({ value, group = false, team = null, actions, run, onPick, wide = false }) {
   const { isOpen, shownPlace, leaving, button, menu, open, close } = useAnchoredMenu();
   const [info, setInfo] = (0, import_react14.useState)(null);
   const [view, setView] = (0, import_react14.useState)("list");
@@ -6706,6 +6768,7 @@ function FolderMenu({ value, group = false, actions, run, onPick, wide = false }
   const [listing, setListing] = (0, import_react14.useState)(null);
   const [problem, setProblem] = (0, import_react14.useState)("");
   const fallback = group ? t("Each Bot's own folder") : t("Team workspace");
+  const home = !group ? team ?? null : null;
   const toggle = () => {
     if (isOpen) {
       close();
@@ -6742,8 +6805,13 @@ function FolderMenu({ value, group = false, actions, run, onPick, wide = false }
     { key: "list", className: "bt-folder-view" },
     (0, import_react14.createElement)(
       "button",
-      { type: "button", role: "menuitemradio", "aria-checked": !value, title: group ? void 0 : info?.team ?? void 0, onClick: () => choose("") },
-      (0, import_react14.createElement)("span", { className: "bt-menu-label" }, fallback),
+      { type: "button", role: "menuitemradio", "aria-checked": !value, title: group ? void 0 : home ?? info?.team ?? void 0, onClick: () => choose("") },
+      (0, import_react14.createElement)(
+        "span",
+        { className: "bt-folder-copy" },
+        (0, import_react14.createElement)("span", { className: "bt-menu-label" }, fallback),
+        home ? (0, import_react14.createElement)("span", { className: "bt-folder-path" }, home) : null
+      ),
       (0, import_react14.createElement)(Tick, { on: !value })
     ),
     folders.length > 0 ? (0, import_react14.createElement)("div", { className: "bt-model-group", role: "presentation" }, t("Folders")) : null,
@@ -6812,15 +6880,15 @@ function FolderMenu({ value, group = false, actions, run, onPick, wide = false }
         "data-wide": wide || void 0,
         "aria-haspopup": "menu",
         "aria-expanded": isOpen,
-        "aria-label": t("Working folder: {folder}", { folder: value ?? fallback }),
-        title: value,
+        "aria-label": t("Working folder: {folder}", { folder: value ?? home ?? fallback }),
+        title: value ?? home ?? void 0,
         onClick: toggle
       },
       (0, import_react14.createElement)(
         "span",
         { className: "bt-model-copy" },
         (0, import_react14.createElement)("span", { className: "bt-model-name" }, value ? folderName(value) : fallback),
-        value ? (0, import_react14.createElement)("span", { className: "bt-model-provider" }, value) : null
+        value ?? home ? (0, import_react14.createElement)("span", { className: "bt-model-provider" }, value ?? home) : null
       ),
       (0, import_react14.createElement)(Caret)
     ),
@@ -8079,7 +8147,7 @@ function BotSettingsForm({ bot, roster, actions, run }) {
         "div",
         { className: "bt-set-row bt-bs-row" },
         (0, import_react18.createElement)("span", { className: "bt-set-copy" }, (0, import_react18.createElement)("span", { className: "bt-bs-label" }, t("Folder"))),
-        (0, import_react18.createElement)(FolderMenu, { value: bot.workDir, actions, run, onPick: (workDir) => save({ workDir }) })
+        (0, import_react18.createElement)(FolderMenu, { value: bot.workDir, team: roster.workspace, actions, run, onPick: (workDir) => save({ workDir }) })
       )
     ),
     (0, import_react18.createElement)(
@@ -9027,7 +9095,7 @@ function GroupSettingsForm({ room: room2, roster, actions, run, onDeleted }) {
         "div",
         { className: "bt-set-row bt-bs-row" },
         (0, import_react23.createElement)("span", { className: "bt-set-copy" }, (0, import_react23.createElement)("span", { className: "bt-bs-label" }, t("Folder"))),
-        (0, import_react23.createElement)(FolderMenu, { value: room2.workDir, group: true, actions, run, onPick: (workDir) => update({ workDir }) })
+        (0, import_react23.createElement)(FolderMenu, { value: room2.workDir, group: true, team: roster.workspace, actions, run, onPick: (workDir) => update({ workDir }) })
       )
     ),
     (0, import_react23.createElement)(
@@ -11582,15 +11650,9 @@ function DetailsDrawer({ sessionId, startRenaming, startTab, hasStrip, roster, a
           "div",
           { key: "folder", className: "bt-drawer-model" },
           (0, import_react31.createElement)("div", { className: "bt-section-title" }, t("Working folder")),
-          (0, import_react31.createElement)("div", { className: "bt-drawer-folder", title: roster.workspace ?? "" }, roster.workspace ?? "")
+          (0, import_react31.createElement)(FolderMenu, { value: bot.workDir, team: roster.workspace, actions, run, wide: true, onPick: (workDir) => run(actions.updateBot(bot.id, { workDir })) })
         ),
         (0, import_react31.createElement)(PermissionRow, { key: "permission", bot, roster, actions, run }),
-        (0, import_react31.createElement)(
-          "div",
-          { key: "folder", className: "bt-drawer-model" },
-          (0, import_react31.createElement)("div", { className: "bt-section-title" }, t("Working folder")),
-          (0, import_react31.createElement)(FolderMenu, { value: bot.workDir, actions, run, wide: true, onPick: (workDir) => run(actions.updateBot(bot.id, { workDir })) })
-        ),
         bot.instructions ? (0, import_react31.createElement)(About, { key: "about", text: bot.instructions }) : (0, import_react31.createElement)("button", { key: "about", type: "button", className: "bt-more", onClick: () => setView("settings") }, t("Add instructions in Bot settings")),
         roster.memory === false ? null : (0, import_react31.createElement)(MemoryRow, { key: "memory", bot, actions }),
         usage ? (0, import_react31.createElement)(

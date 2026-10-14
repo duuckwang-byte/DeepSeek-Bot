@@ -416,8 +416,6 @@ button.bt-q-opt:active{background:var(--bt-active)}
 .bt-set-body{gap:20px}
 .bt-drawer-model{display:flex;flex-direction:column}
 .bt-drawer-model .bt-note{margin-top:6px}
-/* The folder the Bots work in: one path, readable in full even when it is long. */
-.bt-drawer-folder{margin-top:6px;font-size:12px;line-height:18px;color:var(--bt-ink-2);word-break:break-all;user-select:text}
 .bt-drawer-permission{display:flex;flex-direction:column}
 .bt-seg button.bt-perm-danger,.bt-seg button.bt-perm-danger[aria-pressed=true]{color:#e02135}
 

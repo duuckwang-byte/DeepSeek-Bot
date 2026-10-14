@@ -64,7 +64,7 @@ export function GroupSettingsForm({ room, roster, actions, run, onDeleted }) {
     h(Card, { title: t('Working folder') },
       h('div', { className: 'bt-set-row bt-bs-row' },
         h('span', { className: 'bt-set-copy' }, h('span', { className: 'bt-bs-label' }, t('Folder'))),
-        h(FolderMenu, { value: room.workDir, group: true, actions, run, onPick: workDir => update({ workDir }) }))),
+        h(FolderMenu, { value: room.workDir, group: true, team: roster.workspace, actions, run, onPick: workDir => update({ workDir }) }))),
     h(Card, { title: t('Members · {count}', { count: members.length }) },
       members.map((member) => {
         const leads = room.admin === member.id

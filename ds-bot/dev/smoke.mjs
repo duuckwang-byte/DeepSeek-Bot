@@ -164,22 +164,26 @@ const send = (sessionId, text) => api('send', { sessionId, text })
 const chief = () => botNamed('Chief')
 
 let models = []
-await step('bootstrap: Chief waits for a model', () => api('state'), (value, calls) => {
+let setupProject = null
+const folderOf = sessionId => readdirSync(join(HOME, 'sessions')).find(dir => existsSync(join(HOME, 'sessions', dir, sessionId)))
+await step('first-run setup makes Chief in the chosen folder', async () => {
+  const first = await api('state')
+  models = first.models ?? []
+  if (models.length === 0) throw new Error('no models listed for the model card')
+  if (first.setup?.step !== 'workspace') throw new Error(`expected the folder step, got ${first.setup?.step}`)
+  if ((first.bots ?? []).length !== 0) throw new Error('expected no team before setup')
+  setupProject = realpathSync(mkdtempSync(join(tmpdir(), 'ds-bot-smoke-setup-')))
+  await api('choose-workspace', { path: setupProject })
+  await api('finish-setup', { model: models.at(-1).ref })
+}, (_value, calls) => {
   const current = state()
   const bots = Object.values(current.bots)
-  models = value.models ?? []
+  // A fresh Bot's chat is its own id; sessionId appears only after it moves parts.
+  const here = folderOf(chief().sessionId ?? chief().id)
   return expect(bots.length === 1 && bots[0].name === 'Chief' && current.mainBotIds[0] === bots[0].id, 'expected one Main Bot named Chief')
-    ?? expect(bots[0].model === undefined && bots[0].kickoff !== undefined, 'Chief should hold its greeting until a model is picked')
-    ?? expect(value.bots[0].waiting === true, 'the view should show Chief as waiting')
-    ?? expect(calls.length === 0, `Chief called the model ${calls.length} times before it had one`)
-    ?? expect(models.length > 0, 'no models listed for the model card')
-})
-
-await step('user picks a model; Chief greets and asks in its reply', () => api('update-bot', { id: chief().id, model: models.at(-1).ref }), (_value, calls) => {
-  const current = state()
-  return expect(chief().model === models.at(-1).ref, `Chief runs on ${chief().model}`)
-    ?? expect(chief().kickoff === undefined, 'the greeting is still held')
-    ?? expect(!current.questions?.[chief().sessionId ?? chief().id], 'the greeting should not leave a question card')
+    ?? expect(bots[0].model === models.at(-1).ref, `Chief runs on ${bots[0].model}`)
+    ?? expect(current.setup == null, 'setup did not finish')
+    ?? expect(here?.includes(basename(setupProject)), `Chief's chat is under ${here}, not the chosen folder`)
     ?? expect(saidText(calls, /先让团队帮你做哪块/), 'expected Chief to ask in its reply')
 })
 
@@ -282,7 +286,6 @@ await step('update Writer', () => api('update-bot', { id: botNamed('Writer').id,
 // dsh keeps each Session under a folder named after its cwd. A change of working folder
 // moves the Bot's own chat on to a fresh part made there; the fresh part then stays put.
 const project = realpathSync(mkdtempSync(join(tmpdir(), 'ds-bot-smoke-folder-')))
-const folderOf = sessionId => readdirSync(join(HOME, 'sessions')).find(dir => existsSync(join(HOME, 'sessions', dir, sessionId)))
 const coderParts = () => (botNamed('Coder').segments ?? []).length
 const partsBeforeFolder = coderParts()
 await step('Coder works in a folder of its own', () => api('update-bot', { id: botNamed('Coder').id, workDir: project }), () => {
@@ -295,9 +298,10 @@ await step('Coder answers from its folder', () => send(botNamed('Coder').id, '�
 await step('Coder goes back to the team workspace', () => api('update-bot', { id: botNamed('Coder').id, workDir: '' }), () => {
   const coder = botNamed('Coder')
   return expect(coder.workDir === undefined, 'folder not cleared')
-    ?? expect(folderOf(coder.sessionId)?.endsWith('-bot-workspace--'), `Coder's chat is under ${folderOf(coder.sessionId)}`)
+    ?? expect(folderOf(coder.sessionId ?? coder.id)?.includes(basename(setupProject)), `Coder's chat is under ${folderOf(coder.sessionId ?? coder.id)}`)
 })
 rmSync(project, { recursive: true, force: true })
+if (setupProject) rmSync(setupProject, { recursive: true, force: true })
 
 await step('pin Coder', () => api('set-flags', { id: botNamed('Coder').id, pinned: true }), () => expect(botNamed('Coder').pinned === true, 'not pinned'))
 
