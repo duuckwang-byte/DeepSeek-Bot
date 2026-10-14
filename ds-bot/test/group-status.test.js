@@ -71,7 +71,7 @@ async function start() {
   const tool = (name, args, sessionId, exec = {}) => ctx.registeredTools.get(name).execute(args, { agent: { id: sessionId }, ...exec })
   const call = async (endpoint, payload) => (await route.fetch(new Request('http://localhost/api/bot', { method: 'POST', body: JSON.stringify({ endpoint, payload }) }))).json()
   const askApproval = (sessionId, extra = {}, next = () => 'from-dsh') => ctx.listeners.get('approval/request')[0]({ agent: { session: { id: sessionId } }, toolName: 'pwsh', reason: 'escalate sandbox', ...extra }, next)
-  const stop = () => { ctx.dispose(); rmSync(home, { recursive: true, force: true }) }
+  const stop = async () => { await ctx.dispose(); rmSync(home, { recursive: true, force: true, maxRetries: 5 }) }
   await tool('list_bots', {}, 'a')
   return { agentOf, emit, tool, call, askApproval, stop, archived }
 }
@@ -147,13 +147,14 @@ test('an own chat\'s approval stays with DSH and is listed while it waits', asyn
   assert.equal(await host.askApproval('elsewhere'), 'from-dsh')
 })
 
-test('a member at work keeps its turn; one quiet for the whole wait is missed, and a later [PASS] stays out of the group', async (t) => {
+test('a member still going keeps its turn; one quiet for the whole wait is missed, and a later [PASS] stays out of the group', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const host = await start()
   t.after(host.stop)
   const result = await openTurn(t, host)
   t.mock.timers.tick(ROOM_REPLY_TIMEOUT_MS - 1000)
-  host.emit('gb', 'tool/call', { callId: 'k1', name: 'shell', arguments: '{}' })
+  // A team tool is quick: it does not let the round go on without the member.
+  host.emit('gb', 'tool/call', { callId: 'k1', name: 'list_bots', arguments: '{}' })
   t.mock.timers.tick(ROOM_REPLY_TIMEOUT_MS - 1000)
   await settle(() => true)
   assert.equal(result(), undefined)
@@ -246,4 +247,50 @@ test('a member that fails after the round moved on shows the failure in the grou
   assert.deepEqual(round.replies.map(reply => [reply.kind, reply.name, reply.code, reply.status]), [['failed', 'Writer', 'RATE_LIMIT', 429]])
   assert.deepEqual(round.failed, ['Writer'])
   assert.equal(host.agentOf('gb').calls.length, 1)
+})
+
+// Under PTC the model calls run_code, and the program dispatches the real tools.
+const program = (emit, sessionId, callId, code = 'await main()') => emit(sessionId, 'tool/call', { callId, name: 'run_code', arguments: JSON.stringify({ code }) })
+const dispatch = (emit, sessionId, parentCallId, n, name, args = {}) => {
+  const subCallId = `${parentCallId}:ptc:${n}`
+  emit(sessionId, 'tool/ptc-dispatch-start', { rootCallId: parentCallId, parentCallId, subCallId, name, arguments: args })
+  return () => emit(sessionId, 'tool/ptc-dispatch', { rootCallId: parentCallId, parentCallId, subCallId, name, arguments: args, isError: false, content: [] })
+}
+
+test('a Bot running a PTC program shows the tool the program is in', async (t) => {
+  const host = await start()
+  t.after(host.stop)
+  const now = async () => {
+    const { value } = await host.call('state', {})
+    return [value.activity.b, value.work.bots.b?.tool]
+  }
+  host.emit('b', 'turn/start', { turn: 1 })
+  program(host.emit, 'b', 'k1')
+  assert.deepEqual(await now(), ['working', 'run_code'])
+  const messaged = dispatch(host.emit, 'b', 'k1', 1, 'message_bot', { to: 'Chief', message: 'Done?' })
+  assert.deepEqual(await now(), ['sending', 'message_bot'])
+  const read = dispatch(host.emit, 'b', 'k1', 2, 'read_group_chat', { group: 'Ops' })
+  assert.deepEqual(await now(), ['searching', 'read_group_chat'])
+  read()
+  assert.deepEqual(await now(), ['sending', 'message_bot'])
+  messaged()
+  assert.deepEqual(await now(), ['working', 'run_code'])
+  dispatch(host.emit, 'b', 'k1', 3, 'ask_user', { question: 'Ship it?', options: [{ label: 'Yes' }] })()
+  assert.deepEqual(await now(), ['working', 'run_code'])
+  host.emit('b', 'tool/result', { callId: 'k1' })
+  assert.deepEqual(await now(), ['thinking', undefined])
+})
+
+test('an approval asked inside a PTC program shows what that call does', async (t) => {
+  const host = await start()
+  t.after(host.stop)
+  const result = await openTurn(t, host)
+  program(host.emit, 'gb', 'k1')
+  dispatch(host.emit, 'gb', 'k1', 1, 'pwsh', { command: 'Copy-Item a.md E:/docs', description: 'Copy the doc' })
+  void host.askApproval('gb', { callId: 'k1:ptc:1' })
+  await settle(() => result() !== undefined)
+  const { value } = await host.call('state', {})
+  const [approval] = value.work.approvals
+  assert.deepEqual(approval.detail, { text: 'Copy the doc', code: 'Copy-Item a.md E:/docs' })
+  assert.equal(value.work.bots.b.tool, 'pwsh')
 })

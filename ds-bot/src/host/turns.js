@@ -31,8 +31,44 @@ export function attachReference(queued, source, text) {
   post.references = [...(post.references ?? []), { labels, text }]
 }
 
+// A tool call some models write into their text instead of making it (the XML-like
+// form of their own chat template).
+const WRITTEN_CALL = /<tool_call>\s*<function=|<function=[\w.-]+>\s*<parameter=/
+export const writesToolCall = text => typeof text === 'string' && WRITTEN_CALL.test(text)
+export const stripWrittenCalls = text => text
+  .replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/g, '')
+  .replace(/<function=[\w.-]+>[\s\S]*?(?:<\/function>|$)/g, '')
+  .trim()
+
+// Under DSH's PTC presentation the model calls only this tool; the program's sub-calls
+// are the tools it really runs.
+const PROGRAM_TOOL = 'run_code'
+
+const RETRY_TEXT = 'Your last reply wrote a tool call as plain text (<tool_call>…), so it did not run and nothing happened. Call the tool through the tool interface now, then reply as you meant to.'
+
 export function install(rt) {
   const { ctx, state } = rt
+
+  // The retry goes where the turn's trigger came from: a group round's waiter or a
+  // Bot's request keeps its exchange; anything else is a nudge in the Bot's own chat.
+  const retryWrittenCall = (id, info) => {
+    const keeps = info !== undefined && (info.role === 'room' || expectsReply(info))
+    return rt.deliver({
+      ...(keeps && info.senderSessionId ? { fromId: info.senderSessionId } : {}),
+      toId: rt.selfOf(id),
+      sessionId: id,
+      role: keeps ? info.role : 'retry',
+      ...(keeps && info.roomId ? { roomId: info.roomId } : {}),
+      hop: keeps ? info.hop ?? 0 : 0,
+      ...(keeps && info.exchangeId ? { exchangeId: info.exchangeId } : {}),
+      ...(keeps && info.audience ? { audience: info.audience } : {}),
+      ...(keeps && info.askedBy ? { askedBy: info.askedBy } : {}),
+      ...(keeps && info.senderRoomId ? { fromRoomId: info.senderRoomId } : {}),
+      note: 'your tool call did not run',
+      retried: true,
+      text: RETRY_TEXT,
+    })
+  }
 
   /** @type {Map<string, {turn?:number, pending?:any, info?:any, texts:string[], opened?:boolean, joined?:{info:any, from:number}[]}>} */
   const live = new Map()
@@ -87,6 +123,22 @@ export function install(rt) {
     if (value === undefined) delete next[id]
     else next[id] = value
     activity = next
+  }
+  // The newest call still running, a program's sub-calls included, is what the Session
+  // is doing.
+  const showCall = (id, entry) => {
+    const name = [...(entry.calls?.values() ?? [])].at(-1)?.name
+    entry.tool = name
+    if (name !== undefined) setActivity(id, name === 'ask_user' ? undefined : activityOf(name))
+    else if (entry.turn !== undefined) setActivity(id, 'thinking')
+  }
+  const startCall = (id, entry, callId, name, args) => {
+    if (typeof callId === 'string') (entry.calls ??= new Map()).set(callId, { name, args })
+    showCall(id, entry)
+  }
+  const endCall = (id, entry, callId) => {
+    entry.calls?.delete(callId)
+    showCall(id, entry)
   }
 
   const markExchangeTurn = (sessionId, turn) => {
@@ -157,11 +209,29 @@ export function install(rt) {
     return bots
   }
 
+  // Per group, the members whose turn there is running; the round's current speaker is
+  // marked, since its round shows it.
+  const roomWorkView = () => {
+    const speaking = new Set([...roomProgress.values()].map(round => `${round.roomId}:${round.speaking}`))
+    const rooms = {}
+    for (const [id, entry] of live) {
+      const owner = rt.groupOwners.get(id)
+      if (entry.turn === undefined || owner === undefined) continue
+      rooms[owner.roomId] = [...(rooms[owner.roomId] ?? []), {
+        botId: owner.botId,
+        since: entry.since,
+        ...(entry.tool ? { tool: entry.tool } : {}),
+        ...(speaking.has(`${owner.roomId}:${owner.botId}`) ? { speaking: true } : {}),
+      }]
+    }
+    return rooms
+  }
+
   // What a running tool call is about, for an approval card: its own description and
   // the command, path or address it acts on.
   const callDetail = (sessionId, callId) => {
     let args
-    try { args = JSON.parse(live.get(sessionId)?.calls?.get(callId) ?? '{}') } catch { args = {} }
+    try { args = JSON.parse(live.get(sessionId)?.calls?.get(callId)?.args ?? '{}') } catch { args = {} }
     const first = keys => keys.map(key => args?.[key]).find(value => typeof value === 'string' && value.trim() !== '')
     const text = first(['description', 'justification'])
     const code = first(['command', 'cmd', 'file_path', 'path', 'url', 'query'])
@@ -195,15 +265,22 @@ export function install(rt) {
     switch (event.type) {
       case 'tool/call': {
         const name = String(event.data?.name ?? '')
-        setActivity(id, name === 'ask_user' ? undefined : activityOf(name))
-        entry.tool = name
-        if (typeof event.data?.callId === 'string') (entry.calls ??= new Map()).set(event.data.callId, String(event.data.arguments ?? ''))
+        startCall(id, entry, event.data?.callId, name, String(event.data?.arguments ?? ''))
+        // A program is as quick as the tools it runs, so its sub-calls decide.
+        if (rt.groupOwners.has(id) && name !== PROGRAM_TOOL) rt.workRoomTurn?.(id, name)
         break
       }
+      case 'tool/ptc-dispatch-start': {
+        const name = String(event.data?.name ?? '')
+        startCall(id, entry, event.data?.subCallId, name, JSON.stringify(event.data?.arguments ?? {}))
+        if (rt.groupOwners.has(id)) rt.workRoomTurn?.(id, name)
+        break
+      }
+      case 'tool/ptc-dispatch':
+        endCall(id, entry, event.data?.subCallId)
+        break
       case 'tool/result':
-        if (entry.turn !== undefined) setActivity(id, 'thinking')
-        entry.tool = undefined
-        entry.calls?.delete(event.data?.callId)
+        endCall(id, entry, event.data?.callId)
         break
       case 'turn/start':
         setActivity(id, 'thinking')
@@ -255,6 +332,10 @@ export function install(rt) {
             ...(source.late ? { late: true } : {}),
             ...(source.quiet ? { quiet: true } : {}),
             ...(source.failed ? { failed: source.failed } : {}),
+            ...(source.resumed ? { resumed: true } : {}),
+            ...(source.again ? { again: true } : {}),
+            ...(source.stopped ? { stopped: true } : {}),
+            ...(source.askedBy ? { askedBy: source.askedBy } : {}),
           })
         } else if (source?.kind === SOURCE_KIND && source.role === 'kickoff' && rt.roomOf(id)) {
           queueRoomMessage(id, { text: '', kickoff: true })
@@ -295,8 +376,11 @@ export function install(rt) {
         break
       }
       case 'assistant/message': {
-        const text = textOf(event.data?.message?.content)
+        const content = event.data?.message?.content
+        const text = textOf(content)
         if (text !== '') entry.texts.push(text)
+        entry.lastText = text
+        entry.lastCalled = Array.isArray(content) && content.some(block => block?.type === 'tool-call')
         break
       }
       case 'turn/end': {
@@ -304,6 +388,7 @@ export function install(rt) {
         const info = entry.info
         const joined = entry.joined ?? []
         const texts = entry.texts
+        const { lastText, lastCalled } = entry
         // A turn stopped for a switch goes on in the next part, which answers instead.
         const switched = entry.switched === true
         entry.turn = undefined
@@ -314,20 +399,37 @@ export function install(rt) {
         entry.since = undefined
         entry.tool = undefined
         entry.calls = undefined
+        entry.lastText = undefined
+        entry.lastCalled = undefined
         const reason = event.data?.reason
         const failure = reason?.kind === 'error' && !switched ? turnFailure(reason.error) : undefined
         if (failure !== undefined) noteTurnFailure(id, failure)
         if (switched) break
+        // A model that writes its tool call as text ends the turn as if it were done,
+        // though nothing ran. It gets one more turn on the same trigger, so a waiting
+        // round or sender gets the real answer; a second time, the text goes on without
+        // the call.
+        const wroteCall = failure === undefined && reason?.kind === 'completed' && lastCalled !== true && writesToolCall(lastText)
+        const retry = wroteCall && info?.retried !== true && !(info?.role === 'room' && stoppedRoomTurns.has(info.exchangeId))
+        if (retry) void retryWrittenCall(id, info).catch(error => rt.warn('ds-bot: asking %s to run its written tool call failed: %s', id, error))
+        const replyText = () => {
+          const reply = (wroteCall ? texts.map(stripWrittenCalls) : texts).join('\n\n').trim()
+          return wroteCall && reply === '' ? 'Tried to run a tool but wrote the call as text, so it did not run.' : reply
+        }
         // Whoever the turn answers gets the same three-way rule: a failure notice,
         // the turn's text (or a stopped-before-answer line), or nothing.
         const answer = (source, reply) => {
           if (!expectsReply(source) || answersUser(source)) return
           const name = rt.botOf(rt.selfOf(id))?.name ?? 'The other Bot'
+          // A sender that wrote from a group gets the reply in its Session there, while
+          // it is still a member.
+          const back = rt.roomOf(source.senderRoomId)?.sessions?.[source.senderSessionId]
           if (failure !== undefined) {
             // The sender was told a reply comes later; without this it would wait forever.
             void rt.deliver({
               fromId: rt.selfOf(id),
               toId: source.senderSessionId,
+              ...(back ? { sessionId: back } : {}),
               text: `${name} could not answer your message: its model call failed (${failureLine(failure)}). Tell the user if it matters; do not retry right away.`,
               role: 'reply',
               hop: (source.hop ?? 0) + 1,
@@ -339,6 +441,7 @@ export function install(rt) {
             void rt.deliver({
               fromId: rt.selfOf(id),
               toId: source.senderSessionId,
+              ...(back ? { sessionId: back } : {}),
               text: reply !== '' ? reply : `${name} was stopped before it could answer your message.`,
               role: 'reply',
               hop: (source.hop ?? 0) + 1,
@@ -346,20 +449,28 @@ export function install(rt) {
             }).catch(error => rt.warn('ds-bot: reply delivery failed: %s', error))
           }
         }
-        if (info?.role === 'room') {
+        // A retried turn answers the same waiter or sender, so this one passes nothing on.
+        if (!retry && info?.role === 'room') {
           const waiter = roomWaiters.get(info.exchangeId)
           roomWaiters.delete(info.exchangeId)
           const stopped = stoppedRoomTurns.delete(info.exchangeId)
           if (waiter !== undefined) {
             if (failure !== undefined) waiter.fail(failure)
-            else waiter.resolve(reason?.kind === 'aborted' ? null : texts.join('\n\n').trim())
+            else waiter.resolve(reason?.kind === 'aborted' ? null : replyText())
           } else if (!stopped && reason?.kind !== 'aborted') {
             // The round moved on without this member; how its turn ends still reaches the group.
             if (failure !== undefined) void rt.lateRoomFailure?.(id, info, failure)
-            else void rt.lateRoomReply?.(id, info, texts.join('\n\n').trim())
+            else void rt.lateRoomReply?.(id, info, replyText())
           }
-        } else if (info !== undefined) {
-          answer(info, texts.join('\n\n').trim())
+        } else if (!retry && info !== undefined) {
+          // A group Session speaks only in its group: the turn that takes a reply to a
+          // message it sent from there posts what it ends with.
+          if (rt.groupOwners.has(id) && (info.role === 'reply' || info.role === 'retry')) {
+            if (failure !== undefined) void rt.lateRoomFailure?.(id, info, failure)
+            else if (reason?.kind !== 'aborted') void rt.lateRoomReply?.(id, info, replyText())
+          } else {
+            answer(info, replyText())
+          }
         }
         for (const request of joined) {
           // A failed or stopped turn closes the request like any other; a finished
@@ -376,6 +487,7 @@ export function install(rt) {
             role: 'request',
             hop: request.info.hop ?? 0,
             exchangeId: request.info.exchangeId,
+            ...(request.info.senderRoomId ? { fromRoomId: request.info.senderRoomId } : {}),
             deferred: true,
           }).catch(error => rt.warn('ds-bot: deferred request delivery failed: %s', error))
         }
@@ -384,5 +496,5 @@ export function install(rt) {
     }
   })
 
-  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, callDetail, stopRoomTurn })
+  Object.assign(rt, { live, liveOf, roomWaiters, roomProgress, roomInbox, activityView, workView, roomWorkView, callDetail, stopRoomTurn })
 }

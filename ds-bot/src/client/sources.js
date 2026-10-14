@@ -16,7 +16,7 @@ export function createSource(initial) {
   }
 }
 
-export const EMPTY_ROSTER = { revision: -1, mainBotId: null, mainBotIds: [], bots: [], rooms: [], agents: [], exchangeTurns: {}, questions: {}, secrets: [], secretRequests: {}, models: [], defaultModel: null, modelsKey: null, prefs: {}, setup: null, workspace: null, byId: {}, roomsById: {}, agentsById: {}, agentOf: {}, ready: false }
+export const EMPTY_ROSTER = { revision: -1, mainBotId: null, mainBotIds: [], bots: [], rooms: [], agents: [], capabilities: [], capabilityStatuses: {}, exchangeTurns: {}, questions: {}, secrets: [], secretRequests: {}, models: [], defaultModel: null, modelsKey: null, prefs: {}, setup: null, workspace: null, byId: {}, roomsById: {}, agentsById: {}, agentOf: {}, ready: false }
 // Any Main Bot holds the Main Bot powers; `mainBotId`, the first one, is the sidebar tile.
 export const isMainOf = (roster, id) => id !== undefined && (roster.mainBotIds ?? []).includes(id)
 
@@ -47,4 +47,15 @@ export function isAgentSession(roster, cache, sessionId) {
   if (sessionId === undefined || sessionId === null || sessionId === '') return false
   if (roster.ready) return roster.agentOf[sessionId] !== undefined
   return cache.has(sessionId)
+}
+
+// Per Session, how many mounted cells draw each card call; a count of 0 drops the call.
+export function countCards(state, sessionId, callIds, delta) {
+  const own = { ...state[sessionId] }
+  for (const callId of callIds) {
+    const count = (own[callId] ?? 0) + delta
+    if (count > 0) own[callId] = count
+    else delete own[callId]
+  }
+  return { ...state, [sessionId]: own }
 }

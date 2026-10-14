@@ -21,6 +21,9 @@ export const OCR_CACHE_MAX = 500
 export const MAX_AVATAR_IMAGE = 160_000
 export const ROUTE = '/api/bot'
 export const MAX_HOPS = 6
+// Bot requests a Bot's own chat may hold unread; past this the Bot is most likely
+// stuck, and more messages only pile up behind it.
+export const MAX_UNREAD_REQUESTS = 10
 export const MAX_EXCHANGES = 600
 export const ROOM_REPLY_TIMEOUT_MS = 240_000
 export const SOURCE_KIND = 'bot'
@@ -49,9 +52,17 @@ export const TEAM_TOOLS = [
   'create_group', 'update_group', 'delete_group', 'post_to_group', 'ask_user',
   'request_secret', 'list_secrets', 'group_relay', 'read_own_chat',
   'read_group_chat', 'remember', 'forget', 'recall', 'read_browser',
+  'list_capabilities', 'save_capability', 'delete_capability',
+  'attach_capability', 'detach_capability',
 ]
 // Rounds Bots may start in one group by posting, before the user speaks there again.
 export const ROOM_BOT_ROUNDS = 3
+// Answers a group gives to what members post after the round moved on (their finished
+// work, mostly), before the user speaks there again.
+export const ROOM_LATE_ROUNDS = 10
+// A member still at work this long after its first tool call lets the round go on; it
+// posts its reply when the work is done.
+export const ROOM_WORK_GRACE_MS = 15_000
 
 export const OWN_CHAT_LINE_MAX = 400
 // The message an anchor points at is shown whole (up to this), so a long draft takes

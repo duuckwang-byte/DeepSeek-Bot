@@ -4,12 +4,14 @@ export function fakeContext({ services = {} } = {}) {
   const calls = []
   const disposers = []
   const registeredTools = new Map()
+  const guards = []
   // Listeners by event name, in registration order.
   const listeners = new Map()
   const sections = new Map()
   const ctx = {
     calls,
     registeredTools,
+    guards,
     listeners,
     sections,
     logger: { warn() {}, info() {} },
@@ -30,8 +32,9 @@ export function fakeContext({ services = {} } = {}) {
       const dispose = execute()
       if (typeof dispose === 'function') disposers.push(dispose)
     },
+    // Settles once every cleanup has, including the writes some of them wait for.
     dispose() {
-      for (const dispose of disposers.splice(0).reverse()) dispose()
+      return Promise.allSettled(disposers.splice(0).reverse().map(dispose => dispose()))
     },
     tools: {
       register(tool) {
@@ -39,6 +42,12 @@ export function fakeContext({ services = {} } = {}) {
         registeredTools.set(tool.name, tool)
         return () => {}
       },
+      guard(guard) {
+        calls.push('tools guard')
+        guards.push(guard)
+        return () => {}
+      },
+      schemas: () => [],
     },
     systemPrompt: {
       section(section) {
